@@ -1,0 +1,7 @@
+[gateway]
+token = "your bots token here"
+shards = "auto" # or 1 or 2 ...
+
+[amqp]
+group = "gateway" # can be anything but must be same for bot and gateway
+conn = "localhost" # amqp connection string

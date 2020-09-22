@@ -1,0 +1,5 @@
+node_modules
+build/
+*.toml
+structure.txt
+output.txt

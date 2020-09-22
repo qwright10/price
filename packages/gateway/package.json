@@ -1,0 +1,39 @@
+{
+	"name": "@price/gateway",
+	"version": "1.0.0",
+	"description": "Price's Discord gateway",
+	"author": "Quentin Wright <wrightq00@gmail.com>",
+	"homepage": "https://github.com/qwright10/price/tree/master/packages/gateway#readme",
+	"license": "ISC",
+	"main": "build/index.js",
+	"typings": "build/index.d.ts",
+	"directories": {
+		"lib": "src"
+	},
+	"files": [
+		"/build"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/qwright10/price.git"
+	},
+	"bugs": {
+		"url": "https://github.com/qwright10/price/issues"
+	},
+	"scripts": {
+		"build": "tsc"
+	},
+	"dependencies": {
+		"@price/cache": "^1.0.0",
+		"@spectacles/brokers": "^0.8.0",
+		"node-fetch": "^2.6.0",
+		"toml": "^3.0.0",
+		"ws": "^7.3.1",
+		"zlib-sync": "^0.1.7"
+	},
+	"devDependencies": {
+		"@types/node": "^14.0.27",
+		"@types/node-fetch": "^2.5.7",
+		"@types/ws": "^7.2.6"
+	}
+}

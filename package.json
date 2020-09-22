@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/package",
+  "name": "price",
+  "version": "1.0.0",
+  "description": "A Discord bot for checking prices.",
+  "main": "build/index.js",
+  "repository": "https://github.com/qwright10/price.git",
+  "author": "Quentin Wright <wrightq00@gmail.com>",
+  "license": "ISC",
+  "private": true,
+  "scripts": {
+    "bootstrap": "lerna bootstrap --hoist",
+    "installAll": "lerna exec \"npm i\" --parallel",
+    "build": "lerna run build --stream",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "prettier": "prettier --write --use-tabs --single-quote --print-width 120 --trailing-comma all --end-of-line lf"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^3.8.0",
+    "@typescript-eslint/parser": "^3.8.0",
+    "eslint": "^7.6.0",
+    "eslint-config-marine": "^7.1.2",
+    "eslint-config-prettier": "^6.11.0",
+    "eslint-plugin-prettier": "^3.1.4",
+    "lerna": "^3.22.1",
+    "prettier": "^2.0.5",
+    "typescript": "^3.9.7"
+  }
+}
