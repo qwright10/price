@@ -20,7 +20,8 @@ export class SocketClient extends EventEmitter {
 	 */
 	public connect(url: string | null = this._url) {
 		if (!url) throw Error('No WebSocket connection URL was provided');
-		console.log(this.constructor.name, 'connecting to', url);
+		if (this._socket) this._socket.close();
+
 		this._url = url;
 		this._socket = new WebSocket(url)
 			.on('close', (code, reason) => this.emit(SocketEvents.CLOSE, code, reason))
