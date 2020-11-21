@@ -1,36 +1,52 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import { Inflate, Z_SYNC_FLUSH } from 'zlib-sync';
+import { Utils } from '@price/utils';
 
 /**
  * The wrapper for all WebSocket instances.
  * @extends {EventEmitter}
  */
 export class SocketClient extends EventEmitter {
-	private _socket: WebSocket | null = null;
-	private _url: string | null = null;
+	private readonly _socket: WebSocket;
+	private readonly _url: URL;
+	private readonly encoding: 'etf' | 'json';
+	private readonly inflate = new Inflate({ chunkSize: 65535 });
 
-	public constructor(url?: string) {
+	public constructor(url: string, query: Record<string, string>) {
 		super();
-		this._url = url ?? null;
+
+		this.encoding = query.encoding as 'etf' | 'json';
+		this._url = Utils.encodeQuery(url, query);
+		this._socket = new WebSocket(this._url);
+		this._socket.onclose = this.emit.bind(this, SocketEvents.CLOSE);
+		this._socket.onerror = this.emit.bind(this, SocketEvents.ERROR);
+		this._socket.onmessage = this.onMessage.bind(this);
+		this._socket.onopen = this.emit.bind(this, SocketEvents.OPEN);
 	}
 
-	/**
-	 * Creates a WebSocket instance and connects.
-	 * @param {?string} url The WS URL to connect to
-	 */
-	public connect(url: string | null = this._url) {
-		if (!url) throw Error('No WebSocket connection URL was provided');
-		if (this._socket) {
-			this._socket.removeAllListeners();
-			this._socket.close();
-		}
+	public onMessage({ data }: { data: WebSocket.Data }) {
+		const message =
+			data instanceof ArrayBuffer
+				? Buffer.from(data)
+				: typeof data === 'string'
+				? Buffer.from(data)
+				: Array.isArray(data)
+				? Buffer.concat(data)
+				: data;
 
-		this._url = url;
-		this._socket = new WebSocket(url)
-			.on('close', (code, reason) => this.emit(SocketEvents.CLOSE, code, reason))
-			.on('error', (err) => this.emit(SocketEvents.ERROR, err))
-			.on('open', () => this.emit(SocketEvents.OPEN))
-			.on('message', (data) => this.emit(SocketEvents.MESSAGE, data));
+		const l = message.length;
+		const flush =
+			l >= 4 &&
+			message[l - 4] === 0x00 &&
+			message[l - 3] === 0x00 &&
+			message[l - 2] === 0xff &&
+			message[l - 1] === 0xff;
+		this.inflate.push(message, flush && Z_SYNC_FLUSH);
+		if (!flush) return;
+		if (!this.inflate.result) return;
+
+		this.emit(SocketEvents.MESSAGE, Utils.decode(this.inflate.result, this.encoding));
 	}
 
 	/**
@@ -38,7 +54,7 @@ export class SocketClient extends EventEmitter {
 	 * @type {?WebSocket}
 	 * @readonly
 	 */
-	public get socket(): WebSocket | null {
+	public get socket(): WebSocket {
 		return this._socket;
 	}
 
@@ -48,7 +64,7 @@ export class SocketClient extends EventEmitter {
 	 * @readonly
 	 */
 	public get status(): number {
-		return this._socket?.readyState ?? WebSocket.CLOSED;
+		return this._socket.readyState;
 	}
 
 	/**
@@ -56,7 +72,7 @@ export class SocketClient extends EventEmitter {
 	 * @type {?string}
 	 * @readonly
 	 */
-	public get url(): string | null {
+	public get url(): URL {
 		return this._url;
 	}
 
@@ -66,8 +82,7 @@ export class SocketClient extends EventEmitter {
 	 * @returns {void}
 	 */
 	public close(code = 1000): void {
-		this._socket?.close(code);
-		this._socket = null;
+		this._socket.close(code);
 	}
 
 	/**
@@ -76,9 +91,8 @@ export class SocketClient extends EventEmitter {
 	 * @returns {void}
 	 */
 	public send(data: any): void {
-		if (!this._socket || this._socket.readyState !== WebSocket.OPEN) throw Error('WebSocket not ready');
-		if (typeof data === 'object') data = JSON.stringify(data);
-		return this._socket.send(data);
+		if (this._socket.readyState !== WebSocket.OPEN) throw Error('WebSocket not ready');
+		return this._socket.send(Utils.encode(data, this.encoding));
 	}
 }
 

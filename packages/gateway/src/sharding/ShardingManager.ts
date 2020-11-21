@@ -1,37 +1,22 @@
 import { EventEmitter } from 'events';
-import fs from 'fs';
-import path from 'path';
 import { Shard } from './Shard';
-import { Utils } from '../Utils';
+import { Utils } from '@price/utils';
+import { filename } from '../GatewayDelegate';
 
 export class ShardingManager extends EventEmitter {
 	public readonly file: string;
 	public readonly shards = new Map<number, Shard>();
 
-	public shardList: number[];
+	public readonly options: ShardingManagerOptions;
 	public totalShards: number | 'auto';
-	public readonly respawn: boolean;
-	public readonly token: string;
-	public readonly amqpConn: string;
-	public readonly amqpGroup: string;
+	public gatewayURL: string | null = null;
 
-	public constructor(file: string, options: ShardingManagerOptions) {
+	public constructor(options: ShardingManagerOptions) {
 		super();
 
-		this.file = file;
-		if (!file) throw Error('Invalid client option: file (expected a file)');
-		if (!path.isAbsolute(file)) this.file = path.resolve(process.cwd(), file);
-		const stats = fs.statSync(this.file);
-		if (!stats.isFile()) throw Error('Invalid client option: file (expected a file)');
-
-		this.shardList = options.shards === 'auto' ? [] : Array.from({ length: options.shards }, (_, i) => i);
-		this.totalShards = options.shards;
-		this.respawn = options.respawn;
-		this.token = options.token.replace(/^Bot\s*/i, '');
-		this.amqpConn = options.amqpConn;
-		this.amqpGroup = options.amqpGroup ?? 'default';
-
-		process.env.DISCORD_TOKEN = options.token;
+		this.file = filename;
+		this.totalShards = options.gateway.shards;
+		this.options = options;
 	}
 
 	public createShard(id = this.shards.size) {
@@ -42,27 +27,35 @@ export class ShardingManager extends EventEmitter {
 	}
 
 	public async spawn(): Promise<Map<number, Shard>> {
-		if (this.totalShards === 'auto') {
-			const { shards } = await Utils.fetchGateway(this.token);
-			this.totalShards = shards;
-			this.shardList = Array.from({ length: shards }, (_, i) => i);
+		const gateway = await Utils.fetchGateway(this.options.gateway.token);
+		this.gatewayURL = gateway.url;
+
+		if (this.totalShards === 'auto') this.totalShards = gateway.shards;
+		if (!this.totalShards) {
+			console.error('Cannot spawn undefined shards');
+			process.exit(1);
 		}
 
 		console.log('Spawning', this.totalShards, 'shards');
-		for (const id of this.shardList) {
+		for (let id = 0; id < this.totalShards; id++) {
 			const shard = this.createShard(id);
 			shard.spawn();
-			await Utils.delayFor(10000);
+			await Utils.delayFor(5000);
 		}
 
 		return this.shards;
 	}
 }
 
-interface ShardingManagerOptions {
-	amqpConn: string;
-	amqpGroup?: string;
-	respawn: boolean;
-	shards: number | 'auto';
-	token: string;
+export interface ShardingManagerOptions {
+	amqp: {
+		conn: string;
+		group: string;
+	};
+	gateway: {
+		intents?: number;
+		respawn: boolean;
+		shards: number | 'auto';
+		token: string;
+	};
 }

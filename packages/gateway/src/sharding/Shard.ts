@@ -1,91 +1,76 @@
 import { EventEmitter } from 'events';
-import path from 'path';
 import { ShardingManager } from './ShardingManager';
-import { Worker } from 'worker_threads';
-import { Utils } from '../Utils';
+import { Utils } from '@price/utils';
+import { ChildProcess, fork } from 'child_process';
+import { Intents, IntentsFlags } from '@price/structures';
 
 export class Shard extends EventEmitter {
 	public readonly id: number;
 	public readonly manager: ShardingManager;
 
 	public readonly env: any;
+	public readonly intents: number;
 	public ready = false;
-	public worker: Worker | null = null;
+	public child: ChildProcess | null = null;
 
 	public constructor(manager: ShardingManager, id: number) {
 		super();
 
 		this.manager = manager;
 		this.id = id;
+		this.intents = manager.options.gateway.intents ?? Intents.FLAGS[IntentsFlags.UNPRIVILEGED];
 		this.env = {
 			...process.env,
-			AMQP_CONN: this.manager.amqpConn,
-			AMQP_GROUP: this.manager.amqpGroup,
-			DISCORD_TOKEN: this.manager.token,
-			SHARD_ID: this.id,
-			SHARD_COUNT: this.manager.totalShards,
+			START_WORKER: true,
+			GATEWAY_OPTIONS: JSON.stringify({
+				amqp: this.manager.options.amqp,
+				gateway: {
+					intents: this.intents,
+					shard: [this.id, this.manager.totalShards],
+					token: this.manager.options.gateway.token,
+					url: this.manager.gatewayURL,
+				},
+			}),
 		};
 	}
 
-	public spawn(): Worker {
-		if (this.worker) return this.worker;
+	public spawn(): ChildProcess {
+		if (this.child) return this.child;
 
-		this.worker = new Worker(path.resolve(this.manager.file), { workerData: this.env })
+		this.child = fork(this.manager.file, { env: this.env })
 			.on('message', this._onMessage.bind(this))
 			.on('exit', this._onExit.bind(this));
 
-		this.emit('spawn', this.worker);
-		return this.worker;
+		this.emit('spawn', this.child);
+		return this.child;
 	}
 
 	public kill(): void {
-		this.worker?.removeListener('exit', this._onExit);
-		void this.worker?.terminate();
+		this.child?.removeListener('exit', this._onExit);
+		void this.child?.kill();
 		this._onExit(false);
 	}
 
-	public async respawn(): Promise<Worker> {
+	public async respawn(): Promise<ChildProcess> {
 		this.kill();
 		await Utils.delayFor(500);
 		return this.spawn();
 	}
 
 	public send(message: any): this {
-		this.worker?.postMessage(message);
+		this.child?.send(message);
 		return this;
 	}
 
-	private _onMessage(message: any): void {
-		if (message) {
-			if (message._meta) {
-				Object.assign(this.env, { ...message.data });
-				return;
-			}
-
-			if (message._ready) {
-				this.ready = true;
-				this.emit('ready');
-				return;
-			}
-
-			if (message._disconnect) {
-				this.ready = false;
-				this.emit('disconnect');
-				return;
-			}
-
-			if (message._reconnecting) {
-				this.ready = false;
-				this.emit('reconnecting');
-			}
-		}
-	}
-
-	private _onExit(respawn = this.manager.respawn): void {
-		this.emit('death', this.worker);
+	private _onExit(respawn = this.manager.options.gateway.respawn): void {
+		this.emit('death', this.child);
 
 		this.ready = false;
-		this.worker = null;
+		this.child = null;
 		if (respawn) this.spawn();
+	}
+
+	private _onMessage(message: string): void {
+		console.log(message);
 	}
 }

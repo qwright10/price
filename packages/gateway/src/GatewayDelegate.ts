@@ -2,18 +2,39 @@ import { EventEmitter } from 'events';
 import { SocketClient, SocketEvents } from './SocketClient';
 import { Amqp } from '@spectacles/brokers';
 import { RedisClient } from '@price/cache';
-import { workerData } from 'worker_threads';
-import { Utils } from './Utils';
-import zlib from 'zlib-sync';
+import { Logger, Utils } from '@price/utils';
+import { isDeepStrictEqual } from 'util';
+import { EventTrap } from './EventTrap';
+import crypto from 'crypto';
+
+export const filename = __filename;
+
+export interface GatewayDelegateOptions {
+	amqp: {
+		conn: string;
+		group: string;
+	};
+	gateway: {
+		intents: number;
+		shard: [number, number];
+		token: string;
+		url: URL;
+	};
+}
 
 export class GatewayDelegate extends EventEmitter {
-	public readonly broker: Amqp = new Amqp(workerData.AMQP_GROUP);
+	public readonly broker: Amqp;
 	private brokerReady = false;
-	public readonly redis = new RedisClient();
+	private readonly redis = new RedisClient();
+	private readonly publisherID = crypto.randomBytes(120).toString('base64');
+	private readonly traps = new Map<string, EventTrap>();
+	private readonly options: GatewayDelegateOptions;
 
 	private hasACKed = true;
 	private heartbeatInterval?: NodeJS.Timeout;
-	private readonly shard: [number, number] = [0, 1];
+	private readonly intents: number;
+	private readonly shard: [number, number];
+	private readonly token: string;
 
 	private lastSeq: number | null = null;
 	private closeSeq: number | null = null;
@@ -23,65 +44,97 @@ export class GatewayDelegate extends EventEmitter {
 
 	private shouldResume = false;
 	private gatewayURL?: string;
-	private readonly socket = new SocketClient();
-	private readonly inflate = new zlib.Inflate({
-		chunkSize: 65535,
-		to: 'string',
-	});
+	private socket: SocketClient | null = null;
 
-	public constructor(private readonly token: string) {
+	public constructor(options: GatewayDelegateOptions) {
 		super();
-		this.socket.on(SocketEvents.ERROR, console.error);
-		this.socket.on(SocketEvents.CLOSE, this.onClose.bind(this));
-		this.socket.on(SocketEvents.MESSAGE, this.onMessage.bind(this));
 
-		const { SHARD_ID: sid, SHARD_COUNT: sc } = workerData;
-		if (sid !== undefined && sc !== undefined) this.shard = [sid, sc];
+		this.options = options;
+		this.broker = new Amqp(options.amqp.group);
+		this.intents = options.gateway.intents;
+		this.token = options.gateway.token;
+		this.shard = options.gateway.shard;
+	}
+
+	public publishTrapMessage(key: string, message: string) {
+		this.redis.client.publish(this.publisherID, `${key}:${message}`);
+	}
+
+	public registerTrap(conditions: [string, Record<string, any>], duration: number) {
+		const trap = new EventTrap(this, conditions, duration, Utils.generateKey());
+		trap.on('end', () => this.traps.delete(trap.key));
+		this.traps.set(trap.key, trap);
+	}
+
+	public onUpstreamMessage(event: string, { ack, reply }: { ack(): void; reply(...args: any[]): void }): void {
+		let data;
+		try {
+			data = JSON.parse(event);
+		} catch (e) {
+			reply({ data: null, error: e });
+			return;
+		}
+
+		console.log(data);
+
+		switch (data.type) {
+			case 'dispatch': {
+				// const payload = data.data;
+				// this.socket.send(payload);
+				if (data.trap) {
+					this.registerTrap(data.trap.conditions, data.trap.duration);
+					reply({ key: this.publisherID });
+					return ack();
+				}
+
+				return ack();
+			}
+		}
 	}
 
 	public async connect(): Promise<this> {
 		if (!this.brokerReady) {
-			await this.broker.connect(workerData.AMQP_CONN!);
-			await this.broker.createQueue('dispatch');
+			await this.broker.connect(this.options.amqp.conn);
+			await this.broker.createQueue('gateway_downstream');
+			await this.broker.createQueue('gateway_upstream');
+			await this.broker.subscribe('gateway_upstream');
+			this.broker.on('gateway_upstream', this.onUpstreamMessage.bind(this));
 			this.brokerReady = true;
 		}
 
-		this.gatewayURL =
-			this.gatewayURL ??
-			Utils.encodeQuery((await Utils.fetchGateway()).url, { v: 6, encoding: 'json', compress: 'zlib-stream' });
-		this.socket.connect(this.gatewayURL);
-		console.log('Connected to gateway');
+		this.gatewayURL = this.gatewayURL ?? (await Utils.fetchGateway(this.token)).url;
+		this.socket = new SocketClient(this.gatewayURL, { v: '8', encoding: 'etf', compress: 'zlib-stream' });
+		this.socket.on(SocketEvents.ERROR, console.error);
+		this.socket.on(SocketEvents.CLOSE, this.onClose.bind(this));
+		this.socket.on(SocketEvents.MESSAGE, this.onMessage.bind(this));
+		Logger.SOCKET`Connection established at: ${Date.now()}`;
 		return this;
 	}
 
-	public destroy(
-		{ code, reconnect }: { code: CloseCodes; reconnect: boolean } = {
-			code: CloseCodes.NORMAL_CLOSURE,
-			reconnect: false,
-		},
-	): void {
-		console.log('Destroyed with code', CloseCodes[code]);
+	public destroy(code = CloseCodes.NORMAL_CLOSURE, reconnect = true): void {
+		Logger.SOCKET`Destroyed with code: ${CloseCodes[code]}`;
 		this.closeSeq = this.lastSeq;
 		this.lastSeq = null;
 		if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
 
-		this.socket.close(code);
+		if (this.socket) this.socket.close(code);
 		if (reconnect) {
-			void this.connect();
-			return console.log('Reconnecting');
+			Logger.SOCKET`Reconnecting in 5 seconds'`;
+			setTimeout(() => void this.connect(), 5000);
+			return;
 		}
 
-		console.log('Not reconnecting');
+		Logger.SOCKET`Not reconnecting`;
 		return process.exit(1);
 	}
 
 	public heartbeat(force = false): void {
 		if (!this.hasACKed && !force) {
 			this.shouldResume = true;
-			return this.destroy({ code: CloseCodes.SESSION_TIMED_OUT, reconnect: true });
+			return this.destroy(CloseCodes.SESSION_TIMED_OUT, true);
 		}
 
-		return this.socket.send({
+		return this.socket!.send({
 			op: OPCodes.HEARTBEAT,
 			d: this.lastSeq,
 		});
@@ -89,18 +142,21 @@ export class GatewayDelegate extends EventEmitter {
 
 	public identify(): void {
 		if (this.shouldResume && this.sessionID) {
+			Logger.GATEWAY`Session ID found ${this.sessionID}, resuming at ${Date.now()}`;
 			this.shouldResume = false;
-			return this.socket.send({
+			return this.socket!.send({
 				op: OPCodes.RESUME,
 				d: {
 					token: this.token,
 					session_id: this.sessionID,
 					seq: this.closeSeq ?? this.lastSeq,
+					intents: this.intents,
 				},
 			});
 		}
 
-		return this.socket.send({
+		Logger.IDENTIFY`Identifying new session with intents ${this.intents}`;
+		return this.socket!.send({
 			op: OPCodes.IDENTIFY,
 			d: {
 				token: this.token,
@@ -112,6 +168,7 @@ export class GatewayDelegate extends EventEmitter {
 				compress: false,
 				large_threshold: 500,
 				shard: this.shard,
+				intents: this.intents,
 			},
 		});
 	}
@@ -120,60 +177,50 @@ export class GatewayDelegate extends EventEmitter {
 	// ***** EVENT HANDLERS ******************
 	// ***************************************
 
-	public onClose(code: number): void {
-		console.error(this.shard, code);
+	public onClose(event: CloseEvent): void {
+		return Logger.SOCKET`Shard socket ${this.shard} closed: ${event.code} ${event.reason || 'no reason'}`;
+
+		switch (event.code) {
+			case 1001:
+				this.destroy();
+			case 1006:
+				this.destroy();
+			default:
+		}
 	}
 
-	public onMessage(message: any): void {
-		if (message instanceof ArrayBuffer) message = new Uint8Array(message);
-		const l = message.length;
-		const flush =
-			l >= 4 &&
-			message[l - 4] === 0x00 &&
-			message[l - 3] === 0x00 &&
-			message[l - 2] === 0xff &&
-			message[l - 1] === 0xff;
-		this.inflate.push(message, flush && zlib.Z_SYNC_FLUSH);
-		if (!flush) return;
-		message = this.inflate.result;
-		if (!message) return;
-
-		const data = JSON.parse(message as string);
-		if (data.s > (this.lastSeq ?? 0)) this.lastSeq = data.s;
+	public onMessage(data: Payload): void {
+		if ((data.s ?? 0) > (this.lastSeq ?? 0)) this.lastSeq = data.s;
 
 		switch (data.op) {
 			case OPCodes.DISPATCH:
-				return this._onDispatch(data.t, data.d);
+				return this._onDispatch(data.t!, data.d);
 			case OPCodes.HEARTBEAT:
 				return this.heartbeat(true);
-			case OPCodes.RECONNECT: {
+			case OPCodes.RECONNECT:
+				Logger.GATEWAY`Gateway requested reconnect at ${Date.now()}`;
 				this.shouldResume = true;
-				console.log('Gateway requested reconnect at', Date.now());
-				this.destroy({ code: CloseCodes.NORMAL_CLOSURE, reconnect: true });
-				break;
-			}
-			case OPCodes.INVALID_SESSION: {
-				this.shouldResume = data.d;
+				this.destroy(CloseCodes.NORMAL_CLOSURE, true);
+				return;
+			case OPCodes.INVALID_SESSION:
+				Logger.GATEWAY`Gateway invalidated session, resuming? ${data.d ? 'yes' : 'no'}`;
+
 				if (!data.d) {
 					this.sessionID = null;
 					this.lastSeq = null;
 				}
-				console.log('Gateway invalidated session, resuming?', data.d);
-				this.destroy({ code: CloseCodes.GOING_AWAY, reconnect: true });
-				break;
-			}
-			case OPCodes.HELLO: {
-				const interval = data.d.heartbeat_interval;
-				this.heartbeatInterval = setInterval(() => this.heartbeat(), interval);
+
+				this.shouldResume = data.d;
 				this.identify();
-				break;
-			}
-			case OPCodes.HEARTBEAT_ACK: {
+				return;
+			case OPCodes.HELLO:
+				this.heartbeatInterval = setInterval(() => this.heartbeat(), data.d.heartbeat_interval);
+				this.identify();
+				return;
+			case OPCodes.HEARTBEAT_ACK:
 				this.hasACKed = true;
-				break;
-			}
 			default:
-				console.log(data);
+				return undefined;
 		}
 	}
 
@@ -181,13 +228,19 @@ export class GatewayDelegate extends EventEmitter {
 		if (event === 'READY') {
 			this.sessionID = data.session_id;
 			data.guilds.map(({ id }: { id: string }) => this.expectedGuilds.add(id));
-			/* Redis caching here */
+			this.sessionID = data.session_id;
+
+			const shardSame = isDeepStrictEqual(this.shard, data.shard);
+			Logger.GATEWAY`Received shard: [${data.shard}] ${shardSame ? 'matching!' : 'not matching'}`;
+			Logger.GATEWAY`Connected to gateway version: ${data.v}`;
+			Logger.GATEWAY`Received session id: ${data.session_id}`;
+			Logger.GATEWAY`Received ${data.guilds.length} guilds`;
+			Logger.GATEWAY`Logged in as ${data.user.username}`;
 			return;
 		} else if (event === 'GUILD_CREATE') {
 			if (this.expectedGuilds.has(data.id)) {
 				void this.redis.set(data.id, JSON.stringify(data));
 				this.guilds.set(data.id, data);
-				console.log('Received guild', data.id);
 				this.expectedGuilds.delete(data.id);
 				if (this.expectedGuilds.size) return;
 
@@ -197,8 +250,26 @@ export class GatewayDelegate extends EventEmitter {
 			}
 		}
 
-		return this.broker.publish('dispatch', { event, data });
+		return this.broker.publish('gateway_downstream', { event, data });
 	}
+}
+
+if (process.env.START_WORKER) {
+	if (!process.env.GATEWAY_OPTIONS) {
+		console.error('Missing gateway options!');
+		process.exit(1);
+	}
+
+	const options = JSON.parse(process.env.GATEWAY_OPTIONS);
+	const gateway = new GatewayDelegate(options);
+	void gateway.connect();
+}
+
+interface Payload {
+	op: OPCodes;
+	s: number | null;
+	t: string | null;
+	d: any;
 }
 
 export enum OPCodes {

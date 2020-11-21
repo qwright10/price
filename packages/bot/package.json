@@ -1,0 +1,42 @@
+{
+	"name": "@price/bot",
+	"version": "1.0.0",
+	"description": "The Discord part of Price",
+	"author": "Quentin Wright <wrightq00@gmail.com>",
+	"homepage": "https://github.com/qwright10/price/tree/master/packages/bot#readme",
+	"license": "ISC",
+	"main": "build/index.js",
+	"typings": "build/index.d.ts",
+	"directories": {
+		"lib": "src"
+	},
+	"files": [
+		"/build"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/qwright10/price.git"
+	},
+	"bugs": {
+		"url": "https://github.com/qwright10/price/issues"
+	},
+	"scripts": {
+		"build": "tsc"
+	},
+	"devDependencies": {
+		"@types/node": "^14.0.27",
+		"@types/node-fetch": "^2.5.7",
+		"@types/redis": "^2.8.28"
+	},
+	"dependencies": {
+		"@discordjs/form-data": "^3.0.1",
+		"@price/rest": "^1.0.0",
+		"@price/structures": "^1.0.0",
+		"@price/utils": "^1.0.0",
+		"@spectacles/brokers": "^0.8.0",
+		"abort-controller": "^3.0.0",
+		"erlpack": "^0.1.3",
+		"node-fetch": "^2.6.0",
+		"redis": "^3.0.2"
+	}
+}

@@ -1,0 +1,35 @@
+{
+	"name": "@price/rest",
+	"version": "1.0.0",
+	"description": "REST used by Price",
+	"author": "Quentin Wright <wrightq00@gmail.com>",
+	"homepage": "https://github.com/qwright10/price/tree/master/packages/rest#readme",
+	"license": "ISC",
+	"main": "build/index.js",
+	"typings": "build/index.d.ts",
+	"directories": {
+		"lib": "src"
+	},
+	"files": [
+		"/build"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/qwright10/price.git"
+	},
+	"bugs": {
+		"url": "https://github.com/qwright10/price/rest"
+	},
+	"scripts": {
+		"build": "tsc"
+	},
+	"devDependencies": {
+		"@types/node": "^14.14.6",
+		"@types/node-fetch": "^2.5.7"
+	},
+	"dependencies": {
+		"@discordjs/form-data": "^3.0.1",
+		"abort-controller": "^3.0.0",
+		"node-fetch": "^2.6.1"
+	}
+}
